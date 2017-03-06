@@ -1,0 +1,142 @@
+---
+title: "Best Neural Net... so"
+output: word_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Flush out the environment
+```{r}
+flush = function(){rm(list=ls)}
+flush
+```
+### reload pacakge (some not useful)
+```{r include=FALSE}
+source("functions.r")
+#library(bestglm)
+#library(glmulti)
+#library(glmnet)
+library(caret)
+library(pROC)
+library(psych)
+#library(randomForest)
+#library(gbm)
+#library(MASS)
+#library(gam)
+library(RSNNS)
+```
+
+### Load data 
+```{r}
+source("data.r")
+```
+
+### Neural Network Data Setup
+```{r}
+x.train.std = as.data.frame(x.train.std)
+x.valid.std = as.data.frame(x.valid.std)
+t.donrValues = subset(x.train.std, select = -c(reg3, reg4, hinc7, wrat1, avhv, incm, plow, npro, tgif, lgif, rgif, tdon, agif, log_avhv, log_lgif, log_rgif, log_agif, log_inca, y))
+
+#t.donrValues <- x.train.std[,1:47]
+#head(t.donrValues)
+t.donrTargets <- x.train.std$y
+#head(t.donrTargets)
+
+#read in the validation data
+v.donrValues = subset(x.valid.std, select = -c(reg3, reg4, hinc7, wrat1, avhv, incm, plow, npro, tgif, lgif, rgif, tdon, agif, log_avhv, log_lgif, log_rgif, log_agif, log_inca,y))
+#head(v.donrValues)
+v.donrTargets <- x.valid.std$y
+
+# Generate a binary matrix from an integer-valued input vector representing class labels
+t.donrDecTargets <- decodeClassLabels(t.donrTargets)
+v.donrDecTargets <- decodeClassLabels(v.donrTargets)
+#head(v.donrDecTargets)
+
+# Split the data into the training and testing set, and then normalize
+t.donrSample <- splitForTrainingAndTest(t.donrValues, t.donrDecTargets, ratio = 0.2)
+t.donrSample <- normTrainingAndTestSet(t.donrSample)
+
+# normalize validation set
+v.donrSample <- splitForTrainingAndTest(v.donrValues, v.donrDecTargets, ratio = 0.2)
+v.donrSample <- normTrainingAndTestSet(v.donrSample)
+```
+
+### Estimate MLP (This should produce Mailings: 1210 Profit: 11949.5 if your data.r is the same as mine.)
+```{r}
+Size=43    # move i to the layer being tested, best is: 1 layer, 43 neurons
+lr=0.001
+iter=1000
+set.seed(1)
+# Estimate model and find minimum error point
+donr_nn1 <- mlp(t.donrSample$inputsTrain, 
+           t.donrSample$targetsTrain, 
+           size = Size, 
+           learnFuncParams = lr, 
+           maxit = iter,
+           inputsTest  = t.donrSample$inputsTest, 
+           targetsTest = t.donrSample$targetsTest
+           )
+me[i] = which.min(donr_nn1$IterativeTestError)
+plotIterativeError(donr_nn1, main = "# of Iterations vs. Weighted SSE")
+abline(v= which.min(donr_nn1$IterativeTestError),col="green")
+legend("top", legend = c("Test Set", "Training Set"), col = c("red", "black"), pch = 17)
+
+# Restimate and stop on iteration with minimum error
+set.seed(1)
+donr_nn <- mlp(t.donrSample$inputsTrain, 
+           t.donrSample$targetsTrain, 
+           size = Size, 
+           learnFuncParams = lr, 
+           maxit = which.min(donr_nn1$IterativeTestError) ,
+           inputsTest  = t.donrSample$inputsTest, 
+           targetsTest = t.donrSample$targetsTest
+           )
+
+# Calculate the Weights of the Newly Trained Network
+write.csv(weightMatrix(donr_nn), "MLP_Weight_Matrix.csv") # to inspect/deploy
+
+# route "probabilities" into the score logic
+post.valid = predict(donr_nn, v.donrValues)[,2]
+# calculate ordered profit function using average donation = $14.50 and mailing cost = $2
+profit <- cumsum(14.5*c.valid[order(post.valid, decreasing=T)]-2)
+plot(profit) # see how profits change as more mailings are made
+n.mail <- which.max(profit) # number of mailings that maximizes profits
+c(n.mail, max(profit)) # report number of mailings and maximum profit
+# set cutoff based on n.mail.valid
+cutoff <- sort(post.valid, decreasing=T)[n.mail+1] 
+# mail to everyone above the cutoff
+chat.valid <- ifelse(post.valid > cutoff, 1, 0) 
+a = table(chat.valid, c.valid) # classification table
+a
+(a[1,1]+a[2,2])/2018
+#accuracy[i] = (a[1,1]+a[2,2])/2018
+#mprofit[i]  = max(profit)
+#nmail[i]    = n.mail
+print(a)
+writeLines("\n")
+print(paste(n.mail," ",max(profit)))
+```
+### Charts
+```{r}
+nn.roc=roc(response=x.valid.std$y,
+             predictor=post.valid,
+             auc=TRUE)
+
+mhlift(c.valid,post.valid)
+par(mfrow=c(1,3))
+o = par(pty="s")
+plot(nn.roc,col="red")
+par(o)
+auc(nn.roc)
+
+nn.lift = mhlift(c.valid,post.valid)
+plot.mhlift(nn.lift,col="red")
+
+nn.cal = mhcalibration(c.valid,post.valid)
+plot.mhcalibration(nn.cal,col="red")
+par(mfrow=c(1,1))
+```
+
